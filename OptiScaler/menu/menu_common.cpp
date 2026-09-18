@@ -1085,6 +1085,8 @@ inline static std::string GetSourceString(UINT source)
         return "SCR";
     case 64:
         return "SGR";
+    case 128:
+        return "OMUAV";
     default:
         return std::format("{}", source);
     }
@@ -1094,6 +1096,8 @@ inline static std::string GetDispatchString(UINT source)
 {
     switch (source)
     {
+    case 0:
+        return "-";
     case 512:
         return "DI";
     case 1024:
@@ -3198,18 +3202,18 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // DLSSG output requirements
     auto constexpr dlssgOutputIndex = (uint32_t) FGOutput::DLSSG;
-    const bool supportsDlssg = primaryGpu.nvidiaArchInfo.architecture_id >= NV_GPU_ARCHITECTURE_AD100;
+    const bool maySupportDlssg = primaryGpu.vendorId == VendorId::Nvidia;
     const bool hasDlssgReplacement =
         state.nukemsFgFileAvailable || state.artursFgFileAvailable || FfxApiProxy::IsFGReady(false);
 
-    if (!supportsDlssg && hasDlssgReplacement)
+    if (!maySupportDlssg && hasDlssgReplacement)
     {
         outputOptions[dlssgOutputIndex].tooltip =
             "No real DLSSG, unsupported hardware\nOnly Nvngx FG replacements available";
     }
 
     outputOptions[dlssgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
-    outputOptions[dlssgOutputIndex].set_disabled(!supportsDlssg && !hasDlssgReplacement,
+    outputOptions[dlssgOutputIndex].set_disabled(!maySupportDlssg && !hasDlssgReplacement,
                                                  "Unsupported hardware and no replacements");
 
     // For that one case of DX11 DLSSG
@@ -3288,7 +3292,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     }
 
     auto constexpr fgNvngxNoneIndex = (uint32_t) FGNvngxReplacement::None;
-    nvngxOptions[fgNvngxNoneIndex].set_disabled(!supportsDlssg, "Unsupported hardware");
+    nvngxOptions[fgNvngxNoneIndex].set_disabled(!maySupportDlssg, "Unsupported hardware");
 
     if (replaceFgOutputWithNvngx)
     {
@@ -3354,7 +3358,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         }
 
         // Try to avoid having None selected when the gpu doesn't support DLSSG + some fallbacks
-        if (!supportsDlssg && (replaceFgOutputWithNvngx || showNvngxFgDowndown) &&
+        if (!maySupportDlssg && (replaceFgOutputWithNvngx || showNvngxFgDowndown) &&
             config->FGNvngxReplacement.value_or_default() == FGNvngxReplacement::None)
         {
             if (state.nukemsFgFileAvailable)
@@ -4399,8 +4403,12 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
              (state.activeFgOutput == FGOutput::XeFG && XeFGProxy::Module() != nullptr) ||
              (state.activeFgOutput == FGOutput::DLSSG && StreamlineProxy::Module() != nullptr)))
         {
-            if (!Config::Instance()->FGDisableHUDFix.value_or_default() &&
-                state.swapchainInteropApi == SwapchainInteropApi::None)
+            const bool dx11HudfixTracking = state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
+            const bool hudfixTrackingSupported =
+                !Config::Instance()->FGDisableHUDFix.value_or_default() &&
+                (state.swapchainInteropApi == SwapchainInteropApi::None || dx11HudfixTracking);
+
+            if (hudfixTrackingSupported)
             {
                 bool fgHudfix = config->FGHUDFix.value_or_default();
 
@@ -4485,8 +4493,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             {
                 ScopedIndent indent {};
 
-                if (!Config::Instance()->FGDisableHUDFix.value_or_default() &&
-                    state.swapchainInteropApi == SwapchainInteropApi::None)
+                if (hudfixTrackingSupported)
                 {
                     ImGui::Spacing();
 
@@ -4553,14 +4560,20 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                     ImGui::Spacing();
                     if (ImGui::TreeNode("Tracking Settings"))
                     {
+                        ImGui::BeginDisabled(dx11HudfixTracking);
+
                         auto ath = config->FGAlwaysTrackHeaps.value_or_default();
                         if (ImGui::Checkbox("Always Track Heaps", &ath))
                         {
                             config->FGAlwaysTrackHeaps = ath;
                             LOG_DEBUG("Enabled set FGAlwaysTrackHeaps: {}", ath);
                         }
-                        ShowHelpMarker("Always track resources, might cause performance issues\n, but also might "
-                                       "fix HUDFix related crashes!");
+                        ImGui::EndDisabled();
+
+                        ShowHelpMarker(dx11HudfixTracking
+                                           ? "D3D12 only; not applicable to DX11."
+                                           : "Always track resources, might cause performance issues\n, but also might "
+                                             "fix HUDFix related crashes!");
 
                         auto disableRTV = config->FGHudfixDisableRTV.value_or_default();
                         if (ImGui::Checkbox("Disable RTV Tracking", &disableRTV))
